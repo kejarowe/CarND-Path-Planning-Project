@@ -22,5 +22,6 @@ endif(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 
 
 add_executable(path_planning ${sources})
+target_include_directories(path_planning PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 target_link_libraries(path_planning z ssl uv uWS)
