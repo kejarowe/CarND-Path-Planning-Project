@@ -11,6 +11,8 @@
 #include "json.hpp"
 #include "spline.h"
 
+#define LANE_WIDTH 4.0
+
 using namespace std;
 
 // for convenience
@@ -167,49 +169,6 @@ vector<double> getXY(double s, double d, vector<double> maps_s, vector<double> m
 
 }
 
-void next_s(double &current_s, double dt = 0.02)
-{
-  static double current_speed = 0;
-  static double current_accel = 0;
-  const double target_speed = 6.5; //about 15 mph for now
-  const double target_accel = 5;
-  const double allowed_jerk = 5;
-
-  current_s += current_speed * dt;
-  current_speed = current_speed >= target_speed ? current_speed : current_speed + current_accel * dt;
-  current_accel = current_accel >= target_accel ? current_accel : current_accel + allowed_jerk * dt;
-  //current_speed = current_speed >= target_speed ? target_speed : current_speed + current_accel * dt;
-  //current_accel = current_accel >= target_accel ? target_accel : current_accel + allowed_jerk * dt;
-}
-
-void next_s(double &current_s, double &current_speed, double &current_accel, double dt = 0.02)
-{
-  const double target_speed = 6.5; //about 15 mph for now
-  const double target_accel = 5;
-  const double allowed_jerk = 5;
-
-  current_s += current_speed * dt;
-  current_speed = current_speed >= target_speed ? current_speed : current_speed + current_accel * dt;
-  current_accel = current_accel >= target_accel ? current_accel : current_accel + allowed_jerk * dt;
-  //current_speed = current_speed >= target_speed ? target_speed : current_speed + current_accel * dt;
-  //current_accel = current_accel >= target_accel ? target_accel : current_accel + allowed_jerk * dt;
-}
-
-void next_x(double &current_x, std::map<double,double> &arc_length_map, double dt = 0.02)
-{
-  static double current_speed = 0;
-  static double current_accel = 0;
-  const double target_speed = 6.5; //about 15 mph for now
-  const double target_accel = 5;
-  const double allowed_jerk = 5;
-
-  current_x += current_speed * dt;
-  current_speed = current_speed >= target_speed ? current_speed : current_speed + current_accel * dt;
-  current_accel = current_accel >= target_accel ? current_accel : current_accel + allowed_jerk * dt;
-  //current_speed = current_speed >= target_speed ? target_speed : current_speed + current_accel * dt;
-  //current_accel = current_accel >= target_accel ? target_accel : current_accel + allowed_jerk * dt;
-}
-
 inline void next_xy(double target_speed, double target_d, double &pos_x, double &pos_y, double &pos_theta, map_data &md, double dt = 0.02)
 {
   static double current_speed = 0;
@@ -272,33 +231,79 @@ inline void next_xy(double target_speed, double target_d, double &pos_x, double 
   pos_y += current_dist * sin(pos_theta);
 }
 
-bool cipv(double ego_s, double ego_d, std::vector<std::vector<double>> &car_list, double &best_ds, double &best_speed)
+int lane_from_d(double d)
 {
-  static double d_tolerance  = 1.5;
-  best_ds = std::numeric_limits<double>::infinity();
-  bool result = false;
-  for (auto car : car_list) {
-    if (car[5] > ego_s /*in front of ego car*/ 
-      && std::abs(car[6]-ego_d) < d_tolerance /*car in same lane*/) {
+  return std::round( d/LANE_WIDTH - 0.5 );
+}
 
-      double ds = car[5] - ego_s;
-      if (ds < best_ds) {
-        result = true;
-        best_ds = ds;
-        best_speed = std::sqrt(std::pow(car[3],2) + std::pow(car[4],2));
+double magnitude(double a, double b)
+{
+  return std::sqrt(std::pow(a,2)+std::pow(b,2));
+}
+
+bool cipv_and_lane_speeds(double ego_s, double ego_d, std::vector<std::vector<double>> &car_list, double &cipv_ds, double &cipv_speed, double &left_lane_speed, double &right_lane_speed)
+{
+  const double safe_traffic_distance = 30;
+
+  int ego_lane = lane_from_d(ego_d);
+  
+  left_lane_speed = ego_lane == 0? -std::numeric_limits<double>::infinity() : std::numeric_limits<double>::infinity();
+  right_lane_speed = ego_lane == 2? -std::numeric_limits<double>::infinity() : std::numeric_limits<double>::infinity();
+  
+  
+  cipv_ds = std::numeric_limits<double>::infinity();
+  bool result = false;
+
+  int num_right_lane_cars = 0;
+  int num_left_lane_cars = 0;
+  
+  for (auto &car : car_list) {
+
+    int car_lane = lane_from_d(car[6]);
+    double ds = car[5] - ego_s;
+
+    if (car_lane == ego_lane) {
+      //car is in our lane, find cipv distance and speed
+      if (ds > 0) {
+        //in front of ego car
+        if (ds < cipv_ds) {
+          //this car is closer than any car we have seen yet
+          result = true;
+          cipv_ds = ds;
+          cipv_speed = magnitude(car[3],car[4]);
+        }
+      }
+    }
+    else if (std::abs(car_lane - ego_lane) == 1){
+      /*car is in adjacent lane
+        -if its too close, set lane speed to -infinity
+        -if its far enough ahead, set lane speed to min(car speed, lane_speed)
+      */
+      double &ref_lane_speed = car_lane > ego_lane ? right_lane_speed : left_lane_speed;
+      car_lane > ego_lane ? num_right_lane_cars++ : num_left_lane_cars++;
+
+      if (std::abs(ds) < safe_traffic_distance) {
+        ref_lane_speed = -std::numeric_limits<double>::infinity();
+      }
+      else if (ds > 0) {
+        ref_lane_speed = std::min(ref_lane_speed, magnitude(car[3],car[4]));
       }
     }
   }
+  //printf("left speed: %lf, right_speed: %lf\n",left_lane_speed,right_lane_speed);
+  //printf("%d left cars, %d right cars\n",num_left_lane_cars,num_right_lane_cars); 
   return result;
 }
 
-void traj_fsm(double target_vehicle_speed, double target_vehicle_ds, double &desired_ego_speed, double &desired_ego_d)
+void traj_goals(double ego_d, double target_vehicle_speed, double target_vehicle_ds, double left_lane_speed, double right_lane_speed, double &desired_ego_speed, double &desired_ego_d)
 {
-  const double psuedo_target_headway_threshold = 5.0; //seconds
+  const double psuedo_target_headway_threshold = 2.5; //seconds, 5 was too long
   const double set_speed = 20.1; //45mph in mps
-  const double lane_width = 4; //meters
+  const double lane_change_threshold_factor = 0.9;
   static int desired_lane = 1; //leftmost lane: 0, middle_lane: 1, right_lane: 2
 
+  int ego_lane = lane_from_d(ego_d);
+  bool changing_lanes = ego_lane != desired_lane;
   double psuedo_target_headway = target_vehicle_ds / set_speed;
 
   if (psuedo_target_headway < psuedo_target_headway_threshold) {
@@ -310,8 +315,27 @@ void traj_fsm(double target_vehicle_speed, double target_vehicle_ds, double &des
     desired_ego_speed = set_speed;
   }
 
-  //just stay in middle lane for now
-  desired_ego_d = (desired_lane + 0.5) * lane_width;
+  /*
+    - if desired ego speed < 0.9 set_speed try to changes lanes, unless not in desired lane
+  */
+
+  if (!changing_lanes && desired_ego_speed < lane_change_threshold_factor * set_speed) {
+    //our speed is too slow and we are not changing lanes, look for available lane
+
+    if (left_lane_speed > right_lane_speed && left_lane_speed > desired_ego_speed) {
+      //left lane is faster than our lane and right lane
+      desired_lane = ego_lane - 1;
+      printf("lane speed is %lf, left lane speed is: %lf, changing\n",desired_ego_speed,left_lane_speed);
+    }
+    else if (right_lane_speed >= left_lane_speed && right_lane_speed > desired_ego_speed){
+      //right lane is faster than our lane and left lane
+      desired_lane = ego_lane + 1;
+      printf("lane speed is %lf, right lane speed is: %lf, changing\n",desired_ego_speed,right_lane_speed);
+    }
+  }
+
+  //convert lane to d value
+  desired_ego_d = (desired_lane + 0.5) * LANE_WIDTH;
 }
 
 int main() {
@@ -454,15 +478,12 @@ int main() {
 
             //generate new trajectory points
 
-            //find cipv
-            double target_vehicle_ds, target_vehicle_speed;
-            
-            bool success = cipv(pos_s, pos_d, car_list, target_vehicle_ds, target_vehicle_speed); 
+            //find cipv and lane speeds
+            double target_vehicle_ds, target_vehicle_speed, left_lane_speed, right_lane_speed;
+            bool success = cipv_and_lane_speeds(pos_s, pos_d, car_list, target_vehicle_ds, target_vehicle_speed, left_lane_speed, right_lane_speed); 
         
             //run fsm
-            traj_fsm(target_vehicle_speed, target_vehicle_ds, desired_speed, desired_d);
-            printf("target_vehicle_speed: %lf, target_vehicle_ds: %lf, desired_speed: %lf\n",
-              target_vehicle_speed, target_vehicle_ds, desired_speed);
+            traj_goals(pos_d, target_vehicle_speed, target_vehicle_ds, left_lane_speed, right_lane_speed, desired_speed, desired_d);
 
             double next_x, next_y;
             next_x = pos_x;
