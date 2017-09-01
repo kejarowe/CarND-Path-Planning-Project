@@ -191,8 +191,6 @@ inline void next_xy(double target_speed, double target_d, double &pos_x, double 
 
   double current_dist = current_speed * dt;
   double look_ahead_distance = current_dist * projection_multiplier + projection_offset; 
-  //current_speed = current_speed >= target_speed ? current_speed : current_speed + current_accel * dt;
-  //current_accel = current_accel >= allowed_lon_accel ? current_accel : current_accel + allowed_jerk * dt;
   
   //set jerk
   double desired_accel = 0; 
@@ -488,6 +486,8 @@ int main() {
             double next_x, next_y;
             next_x = pos_x;
             next_y = pos_y;
+
+            //generate next points
             for(int i = 0; i < 50-path_size; i++)
             { 
               next_xy(desired_speed, desired_d, pos_x, pos_y, pos_theta, md);
